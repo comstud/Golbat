@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/jellydator/ttlcache/v3"
-	log "github.com/sirupsen/logrus"
 	"golbat/config"
 	"golbat/db"
 	"golbat/external"
@@ -15,9 +13,12 @@ import (
 	"golbat/tz"
 	"golbat/util"
 	"golbat/webhooks"
-	"gopkg.in/guregu/null.v4"
 	"strings"
 	"time"
+
+	"github.com/jellydator/ttlcache/v3"
+	log "github.com/sirupsen/logrus"
+	"gopkg.in/guregu/null.v4"
 )
 
 // Pokestop struct.
@@ -826,12 +827,17 @@ func UpdatePokestopWithQuest(ctx context.Context, db db.DbDetails, quest *pogo.F
 		return "No quest"
 	}
 
-	haveArStr := "NoAR"
-	if haveAr {
-		haveArStr = "AR"
-	}
+	var lat, lon float64
 
-	external.DecodeQuest.WithLabelValues("ok", haveArStr).Inc()
+	defer func() {
+		var areas []geo.AreaName
+
+		if lat != 0 && lon != 0 {
+			areas = MatchStatsGeofence(lat, lon)
+		}
+		external.UpdateSuccessfulQuests(haveAr, areas)
+	}()
+
 	pokestopMutex, _ := pokestopStripedMutex.GetLock(quest.FortId)
 	pokestopMutex.Lock()
 	defer pokestopMutex.Unlock()
@@ -849,6 +855,8 @@ func UpdatePokestopWithQuest(ctx context.Context, db db.DbDetails, quest *pogo.F
 
 	updatePokestopGetMapFortCache(pokestop)
 	savePokestopRecord(ctx, db, pokestop)
+	lat, lon = pokestop.Lat, pokestop.Lon
+
 	return fmt.Sprintf("%s", quest.FortId)
 }
 

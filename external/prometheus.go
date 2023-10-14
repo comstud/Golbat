@@ -1,15 +1,16 @@
 package external
 
 import (
+	"golbat/config"
+	"golbat/geo"
+	"strconv"
+	"time"
+
 	"github.com/Depado/ginprom"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
-	"golbat/config"
-	"golbat/geo"
 	"gopkg.in/guregu/null.v4"
-	"strconv"
-	"time"
 )
 
 var (
@@ -54,21 +55,21 @@ var (
 			Name: "decode_encounter",
 			Help: "Total number of decoded: Encounter",
 		},
-		[]string{"status", "message"},
+		[]string{"status", "message", "area"},
 	)
 	DecodeDiskEncounter = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "decode_disk_encounter",
 			Help: "Total number of decoded DiskEncounter",
 		},
-		[]string{"status", "message"},
+		[]string{"status", "message", "area"},
 	)
 	DecodeQuest = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "decode_quest",
 			Help: "Total number of decoded: Quests",
 		},
-		[]string{"status", "message"},
+		[]string{"status", "message", "area"},
 	)
 	DecodeSocialActionWithRequest = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -265,12 +266,58 @@ func UpdateVerifiedTtl(area geo.AreaName, seenType null.String, expireTimestamp 
 	VerifiedPokemonTTLCounter.WithLabelValues(area.String(), seenTypeStr, above30).Inc()
 }
 
+func UpdateSuccessfulQuests(haveAr bool, areas []geo.AreaName) {
+	haveArStr := "NoAR"
+	if haveAr {
+		haveArStr = "AR"
+	}
+	if len(areas) == 0 {
+		DecodeQuest.WithLabelValues("ok", haveArStr, "").Inc()
+	} else {
+		processed := make(map[string]bool)
+		for _, area := range areas {
+			area_str := area.String()
+			if !processed[area_str] {
+				DecodeQuest.WithLabelValues("ok", haveArStr, area_str).Inc()
+				processed[area_str] = true
+			}
+		}
+	}
+}
+
+func UpdateSuccessfulEncounters(encounterType string, message string, areas []geo.AreaName) {
+	var metric *prometheus.CounterVec
+
+	if encounterType == "wild" {
+		metric = DecodeEncounter
+	} else if encounterType == "lure" {
+		metric = DecodeDiskEncounter
+	}
+
+	if len(areas) == 0 {
+		metric.WithLabelValues("ok", message, "")
+	} else {
+		processed := make(map[string]bool)
+		for _, area := range areas {
+			area_str := area.String()
+			if !processed[area_str] {
+				metric.WithLabelValues("ok", message, area_str)
+				processed[area_str] = true
+			}
+		}
+	}
+}
+
 func UpdateRaidCount(areas []geo.AreaName, raidLevel int64) {
-	processed := make(map[string]bool)
-	for _, area := range areas {
-		if !processed[area.String()] {
-			RaidCount.WithLabelValues(area.String(), strconv.FormatInt(raidLevel, 10)).Inc()
-			processed[area.String()] = true
+	if len(areas) == 0 {
+		RaidCount.WithLabelValues("", strconv.FormatInt(raidLevel, 10)).Inc()
+	} else {
+		processed := make(map[string]bool)
+		for _, area := range areas {
+			if !processed[area.String()] {
+				RaidCount.WithLabelValues(area.String(), strconv.FormatInt(raidLevel, 10)).Inc()
+				processed[area.String()] = true
+			}
 		}
 	}
 }

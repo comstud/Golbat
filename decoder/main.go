@@ -3,10 +3,6 @@ package decoder
 import (
 	"context"
 	"fmt"
-	"github.com/UnownHash/gohbem"
-	"github.com/jellydator/ttlcache/v3"
-	stripedmutex "github.com/nmvalera/striped-mutex"
-	log "github.com/sirupsen/logrus"
 	"golbat/config"
 	"golbat/db"
 	"golbat/geo"
@@ -16,6 +12,11 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/UnownHash/gohbem"
+	"github.com/jellydator/ttlcache/v3"
+	stripedmutex "github.com/nmvalera/striped-mutex"
+	log "github.com/sirupsen/logrus"
 
 	"gopkg.in/guregu/null.v4"
 )
@@ -327,7 +328,7 @@ func UpdatePokemonBatch(ctx context.Context, db db.DbDetails, scanParameters Sca
 								log.Debugf("DELAYED UPDATE: Updating pokemon %s from wild", encounterId)
 
 								pokemon.updateFromWild(ctx, db, wildPokemon, cellId, timestampMs, username)
-								savePokemonRecordAsAtTime(ctx, db, pokemon, updateTime)
+								savePokemonRecordAsAtTime(ctx, db, "", pokemon, updateTime)
 							}
 						}
 					}(wild.Data, int64(wild.Cell), int64(wild.Timestamp))
@@ -348,7 +349,7 @@ func UpdatePokemonBatch(ctx context.Context, db db.DbDetails, scanParameters Sca
 				log.Printf("getOrCreatePokemonRecord: %s", err)
 			} else {
 				pokemon.updateFromNearby(ctx, db, nearby.Data, int64(nearby.Cell), username)
-				savePokemonRecord(ctx, db, pokemon)
+				savePokemonRecord(ctx, db, "", pokemon)
 			}
 
 			pokemonMutex.Unlock()
@@ -372,8 +373,10 @@ func UpdatePokemonBatch(ctx context.Context, db db.DbDetails, scanParameters Sca
 				diskEncounterCache.Delete(encounterId)
 				pokemon.updatePokemonFromDiskEncounterProto(ctx, db, diskEncounter)
 				log.Infof("Processed stored disk encounter")
+				savePokemonRecord(ctx, db, "lure", pokemon)
+			} else {
+				savePokemonRecord(ctx, db, "", pokemon)
 			}
-			savePokemonRecord(ctx, db, pokemon)
 		}
 		pokemonMutex.Unlock()
 	}

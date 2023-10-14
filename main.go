@@ -9,13 +9,14 @@ import (
 	"golbat/external"
 	pb "golbat/grpc"
 	"golbat/webhooks"
-	"google.golang.org/grpc"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 	_ "time/tzdata"
+
+	"google.golang.org/grpc"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/jmoiron/sqlx"
@@ -689,7 +690,6 @@ func decodeDiskEncounter(ctx context.Context, sDec []byte) string {
 		return res
 	}
 
-	external.DecodeDiskEncounter.WithLabelValues("ok", "").Inc()
 	return decoder.UpdatePokemonRecordWithDiskEncounterProto(ctx, dbDetails, decodedEncounterInfo)
 }
 
