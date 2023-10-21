@@ -26,7 +26,7 @@ func (s *grpcRawServer) SubmitRawProto(ctx context.Context, in *pb.RawProtoReque
 
 	protoData := rawProtoDecoder.GetProtoDataFromGRPC(in)
 	// Process each proto in a packet in sequence, but in a go-routine
-	go rawProtoDecoder.Decode(context.Background(), protoData, decode)
+	go rawProtoDecoder.Decode(context.Background(), protoData)
 
 	deviceTracker.UpdateDeviceLocation(protoData.Uuid, protoData.Lat(), protoData.Lon(), protoData.ScanContext)
 
