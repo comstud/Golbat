@@ -5,19 +5,20 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/UnownHash/gohbem"
-	"github.com/golang/geo/s2"
-	"github.com/jellydator/ttlcache/v3"
-	log "github.com/sirupsen/logrus"
 	"golbat/config"
 	"golbat/db"
 	"golbat/geo"
 	"golbat/pogo"
 	"golbat/webhooks"
-	"gopkg.in/guregu/null.v4"
 	"math"
 	"strconv"
 	"time"
+
+	"github.com/UnownHash/gohbem"
+	"github.com/golang/geo/s2"
+	"github.com/jellydator/ttlcache/v3"
+	log "github.com/sirupsen/logrus"
+	"gopkg.in/guregu/null.v4"
 )
 
 // Pokemon struct.
@@ -221,15 +222,30 @@ func hasChangesPokemon(old *Pokemon, new *Pokemon) bool {
 		!nullFloatAlmostEqual(old.Capture3, new.Capture3, floatTolerance)
 }
 
-func savePokemonRecord(ctx context.Context, db db.DbDetails, pokemon *Pokemon) {
-	savePokemonRecordAsAtTime(ctx, db, pokemon, time.Now().Unix())
+func savePokemonRecord(ctx context.Context, db db.DbDetails, encounterType string, pokemon *Pokemon) {
+	savePokemonRecordAsAtTime(ctx, db, encounterType, pokemon, time.Now().Unix())
 }
 
-func savePokemonRecordAsAtTime(ctx context.Context, db db.DbDetails, pokemon *Pokemon, now int64) {
+func savePokemonRecordAsAtTime(ctx context.Context, db db.DbDetails, encounterType string, pokemon *Pokemon, now int64) {
 	oldPokemon, _ := getPokemonRecord(ctx, db, pokemon.Id)
 
+	var areas []geo.AreaName
+	getAreas := func() []geo.AreaName {
+		if areas == nil {
+			areas = MatchStatsGeofence(pokemon.Lat, pokemon.Lon)
+		}
+		return areas
+	}
+
 	if oldPokemon != nil && !hasChangesPokemon(oldPokemon, pokemon) {
+		if encounterType != "" {
+			statsCollector.IncDecodeEncounterType(encounterType, "ok", "duplicate", getAreas())
+		}
 		return
+	}
+
+	if encounterType != "" {
+		statsCollector.IncDecodeEncounterType(encounterType, "ok", "", getAreas())
 	}
 
 	// Blank, non-persisted record are now inserted into the cache to save on DB calls
@@ -382,9 +398,8 @@ func savePokemonRecordAsAtTime(ctx context.Context, db db.DbDetails, pokemon *Po
 
 	updatePokemonLookup(pokemon, changePvpField, pvpResults)
 
-	areas := MatchStatsGeofence(pokemon.Lat, pokemon.Lon)
-	createPokemonWebhooks(oldPokemon, pokemon, areas)
-	updatePokemonStats(oldPokemon, pokemon, areas)
+	createPokemonWebhooks(oldPokemon, pokemon, getAreas())
+	updatePokemonStats(oldPokemon, pokemon, getAreas())
 	updatePokemonNests(oldPokemon, pokemon)
 
 	pokemon.Pvp = null.NewString("", false) // Reset PVP field to avoid keeping it in memory cache
@@ -1124,7 +1139,7 @@ func UpdatePokemonRecordWithEncounterProto(ctx context.Context, db db.DbDetails,
 	}
 
 	pokemon.updatePokemonFromEncounterProto(ctx, db, encounter, username)
-	savePokemonRecord(ctx, db, pokemon)
+	savePokemonRecord(ctx, db, "wild", pokemon)
 
 	return fmt.Sprintf("%d %s Pokemon %d CP%d", encounter.Pokemon.EncounterId, encounterId, pokemon.PokemonId, encounter.Pokemon.Pokemon.Cp)
 }
@@ -1152,7 +1167,7 @@ func UpdatePokemonRecordWithDiskEncounterProto(ctx context.Context, db db.DbDeta
 		return fmt.Sprintf("%s Disk encounter without previous GMO - Pokemon stored for later", encounterId)
 	}
 	pokemon.updatePokemonFromDiskEncounterProto(ctx, db, encounter)
-	savePokemonRecord(ctx, db, pokemon)
+	savePokemonRecord(ctx, db, "lure", pokemon)
 
 	return fmt.Sprintf("%s Disk Pokemon %d CP%d", encounterId, pokemon.PokemonId, encounter.Pokemon.Cp)
 }

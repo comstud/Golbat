@@ -52,21 +52,21 @@ var (
 			Name: "decode_encounter",
 			Help: "Total number of decoded: Encounter",
 		},
-		[]string{"status", "message"},
+		[]string{"status", "message", "area"},
 	)
 	decodeDiskEncounter = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "decode_disk_encounter",
 			Help: "Total number of decoded DiskEncounter",
 		},
-		[]string{"status", "message"},
+		[]string{"status", "message", "area"},
 	)
 	decodeQuest = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "decode_quest",
 			Help: "Total number of decoded: Quests",
 		},
-		[]string{"status", "message"},
+		[]string{"status", "message", "area"},
 	)
 	decodeSocialActionWithRequest = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -242,16 +242,45 @@ func (col *promCollector) IncDecodeGetGymInfo(status, message string) {
 	decodeGetGymInfo.WithLabelValues(status, message).Inc()
 }
 
-func (col *promCollector) IncDecodeEncounter(status, message string) {
-	decodeEncounter.WithLabelValues(status, message).Inc()
+func (col *promCollector) incCounterWithAreas(metric *prometheus.CounterVec, status, message string, areas []geo.AreaName) {
+	if len(areas) == 0 {
+		metric.WithLabelValues(status, message, "")
+		return
+	}
+
+	processed := make(map[string]bool)
+	for _, area := range areas {
+		area_str := area.String()
+		if !processed[area_str] {
+			metric.WithLabelValues(status, message, area_str).Inc()
+			processed[area_str] = true
+		}
+	}
 }
 
-func (col *promCollector) IncDecodeDiskEncounter(status, message string) {
-	decodeDiskEncounter.WithLabelValues(status, message).Inc()
+func (col *promCollector) IncDecodeEncounter(status, message string, areas []geo.AreaName) {
+	col.incCounterWithAreas(decodeEncounter, status, message, areas)
 }
 
-func (col *promCollector) IncDecodeQuest(status, message string) {
-	decodeQuest.WithLabelValues(status, message).Inc()
+func (col *promCollector) IncDecodeDiskEncounter(status, message string, areas []geo.AreaName) {
+	col.incCounterWithAreas(decodeDiskEncounter, status, message, areas)
+}
+
+func (col *promCollector) IncDecodeEncounterType(typ, status, message string, areas []geo.AreaName) {
+	var metric *prometheus.CounterVec
+
+	if typ == "wild" {
+		metric = decodeEncounter
+	} else if typ == "lure" {
+		metric = decodeDiskEncounter
+	} else {
+		return
+	}
+	col.incCounterWithAreas(metric, status, message, areas)
+}
+
+func (col *promCollector) IncDecodeQuest(status, message string, areas []geo.AreaName) {
+	col.incCounterWithAreas(decodeQuest, status, message, areas)
 }
 
 func (col *promCollector) IncDecodeSocialActionWithRequest(status, message string) {
