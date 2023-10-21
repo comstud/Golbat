@@ -5,9 +5,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	db2 "golbat/db"
 	"golbat/grpc"
 	"golbat/pogo"
+	"golbat/stats_collector"
 	"net/http"
+	"strings"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -16,7 +20,7 @@ import (
 type RawDecoder interface {
 	GetProtoDataFromHTTP(http.Header, []byte) (*ProtoData, error)
 	GetProtoDataFromGRPC(*grpc.RawProtoRequest) *ProtoData
-	Decode(context.Context, *ProtoData, func(context.Context, *Proto))
+	Decode(context.Context, *ProtoData)
 }
 
 type ProtoData struct {
@@ -89,10 +93,82 @@ func (pd *Proto) ResponseProtoBytes() []byte {
 	return respBytes
 }
 
+type decodeProtoMethod struct {
+	Decode   func(*rawDecoder, context.Context, *Proto) (bool, string)
+	MinLevel int
+}
+
+var decodeMethods = map[pogo.Method]*decodeProtoMethod{
+	pogo.Method_METHOD_START_INCIDENT:                                           &decodeProtoMethod{(*rawDecoder).decodeStartIncident, 30},
+	pogo.Method_METHOD_INVASION_OPEN_COMBAT_SESSION:                             &decodeProtoMethod{(*rawDecoder).decodeOpenInvasion, 30},
+	pogo.Method_METHOD_FORT_DETAILS:                                             &decodeProtoMethod{(*rawDecoder).decodeFortDetails, 30},
+	pogo.Method_METHOD_GET_MAP_OBJECTS:                                          &decodeProtoMethod{(*rawDecoder).decodeGMO, 0},
+	pogo.Method_METHOD_GYM_GET_INFO:                                             &decodeProtoMethod{(*rawDecoder).decodeGetGymInfo, 10},
+	pogo.Method_METHOD_ENCOUNTER:                                                &decodeProtoMethod{(*rawDecoder).decodeEncounter, 30},
+	pogo.Method_METHOD_DISK_ENCOUNTER:                                           &decodeProtoMethod{(*rawDecoder).decodeDiskEncounter, 30},
+	pogo.Method_METHOD_FORT_SEARCH:                                              &decodeProtoMethod{(*rawDecoder).decodeFortSearch, 10},
+	pogo.Method(pogo.InternalPlatformClientAction_INTERNAL_PROXY_SOCIAL_ACTION): &decodeProtoMethod{(*rawDecoder).decodeSocialAction, 0},
+	pogo.Method_METHOD_GET_MAP_FORTS:                                            &decodeProtoMethod{(*rawDecoder).decodeGetMapForts, 10},
+	pogo.Method_METHOD_GET_ROUTES:                                               &decodeProtoMethod{(*rawDecoder).decodeGetRoutes, 30},
+	pogo.Method_METHOD_GET_CONTEST_DATA:                                         &decodeProtoMethod{(*rawDecoder).decodeGetContestData, 10},
+	pogo.Method_METHOD_GET_POKEMON_SIZE_CONTEST_ENTRY:                           &decodeProtoMethod{(*rawDecoder).decodeGetPokemonSizeContestEntry, 10},
+	// ignores
+	pogo.Method_METHOD_GET_PLAYER:              nil,
+	pogo.Method_METHOD_GET_HOLOHOLO_INVENTORY:  nil,
+	pogo.Method_METHOD_CREATE_COMBAT_CHALLENGE: nil,
+}
+
 var _ RawDecoder = (*rawDecoder)(nil)
 
 type rawDecoder struct {
-	decodeTimeout time.Duration
+	decodeTimeout  time.Duration
+	dbDetails      db2.DbDetails
+	statsCollector stats_collector.StatsCollector
+}
+
+func (dec *rawDecoder) decode(ctx context.Context, protoData *Proto) {
+	getMethodName := func(method pogo.Method, trimString bool) string {
+		if val, ok := pogo.Method_name[int32(method)]; ok {
+			if trimString && strings.HasPrefix(val, "METHOD_") {
+				return strings.TrimPrefix(val, "METHOD_")
+			}
+			return val
+		}
+		return fmt.Sprintf("#%d", method)
+	}
+
+	processed := false
+	ignore := false
+	start := time.Now()
+	result := ""
+
+	method := pogo.Method(protoData.Method)
+	decodeMethod, ok := decodeMethods[method]
+	if ok {
+		if decodeMethod == nil {
+			// completely ignore
+			return
+		}
+		if protoData.Level < decodeMethod.MinLevel {
+			dec.statsCollector.IncDecodeMethods("error", "low_level", getMethodName(method, true))
+			log.Debugf("Insufficient Level %d Did not process hook type %s", protoData.Level, method)
+			return
+		}
+		processed, result = decodeMethod.Decode(dec, ctx, protoData)
+	} else {
+		log.Debugf("Did not know hook type %s", method)
+	}
+
+	if !ignore {
+		elapsed := time.Since(start)
+		if processed == true {
+			dec.statsCollector.IncDecodeMethods("ok", "", getMethodName(method, true))
+			log.Debugf("%s/%s %s - %s - %s", protoData.Uuid, protoData.Account, pogo.Method(method), elapsed, result)
+		} else {
+			log.Debugf("%s/%s %s - %s - %s", protoData.Uuid, protoData.Account, pogo.Method(method), elapsed, "**Did not process**")
+			dec.statsCollector.IncDecodeMethods("unprocessed", "", getMethodName(method, true))
+		}
+	}
 }
 
 func (dec *rawDecoder) parsePogodroidBody(headers http.Header, body []byte, origin string) (*ProtoData, error) {
@@ -301,17 +377,19 @@ func (dec *rawDecoder) GetProtoDataFromGRPC(in *grpc.RawProtoRequest) *ProtoData
 	}
 }
 
-func (dec *rawDecoder) Decode(ctx context.Context, protoData *ProtoData, decodeFn func(context.Context, *Proto)) {
+func (dec *rawDecoder) Decode(ctx context.Context, protoData *ProtoData) {
 	for _, proto := range protoData.Protos {
 		// provide independent cancellation contexts for each proto decode
 		ctx, cancel := context.WithTimeout(ctx, dec.decodeTimeout)
-		decodeFn(ctx, &proto)
+		dec.decode(ctx, &proto)
 		cancel()
 	}
 }
 
-func NewRawDecoder(decodeTimeout time.Duration) RawDecoder {
+func NewRawDecoder(decodeTimeout time.Duration, dbDetails db2.DbDetails, statsCollector stats_collector.StatsCollector) RawDecoder {
 	return &rawDecoder{
-		decodeTimeout: decodeTimeout,
+		decodeTimeout:  decodeTimeout,
+		dbDetails:      dbDetails,
+		statsCollector: statsCollector,
 	}
 }
