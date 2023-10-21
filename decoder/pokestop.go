@@ -822,16 +822,28 @@ func UpdatePokestopRecordWithFortDetailsOutProto(ctx context.Context, db db.DbDe
 
 func UpdatePokestopWithQuest(ctx context.Context, db db.DbDetails, quest *pogo.FortSearchOutProto, haveAr bool) string {
 	if quest.ChallengeQuest == nil {
-		statsCollector.IncDecodeQuest("error", "no_quest")
+		statsCollector.IncDecodeQuest("error", "no_quest", nil)
 		return "No quest"
 	}
 
-	haveArStr := "NoAR"
-	if haveAr {
-		haveArStr = "AR"
-	}
+	var lat, lon float64
 
-	statsCollector.IncDecodeQuest("ok", haveArStr)
+	defer func() {
+		var areas []geo.AreaName
+
+		if lat != 0 && lon != 0 {
+			areas = MatchStatsGeofence(lat, lon)
+		}
+
+		var haveArStr string
+		if haveAr {
+			haveArStr = "AR"
+		} else {
+			haveArStr = "NoAR"
+		}
+		statsCollector.IncDecodeQuest("ok", haveArStr, areas)
+	}()
+
 	pokestopMutex, _ := pokestopStripedMutex.GetLock(quest.FortId)
 	pokestopMutex.Lock()
 	defer pokestopMutex.Unlock()
@@ -849,6 +861,8 @@ func UpdatePokestopWithQuest(ctx context.Context, db db.DbDetails, quest *pogo.F
 
 	updatePokestopGetMapFortCache(pokestop)
 	savePokestopRecord(ctx, db, pokestop)
+	lat, lon = pokestop.Lat, pokestop.Lon
+
 	return fmt.Sprintf("%s", quest.FortId)
 }
 
