@@ -16,6 +16,7 @@ import (
 
 	"golbat/config"
 	"golbat/db"
+	"golbat/geo"
 	"golbat/pogo"
 	"golbat/tz"
 	"golbat/util"
@@ -897,11 +898,22 @@ func UpdatePokestopWithQuest(ctx context.Context, db db.DbDetails, quest *pogo.F
 	}
 
 	if quest.ChallengeQuest == nil {
-		statsCollector.IncDecodeQuest("error", "no_quest")
+		statsCollector.IncDecodeQuest("error", "no_quest", nil)
 		return fmt.Sprintf("%s %s Blank quest", quest.FortId, haveArStr)
 	}
 
-	statsCollector.IncDecodeQuest("ok", haveArStr)
+	var lat, lon float64
+
+	defer func() {
+		var areas []geo.AreaName
+
+		if lat != 0 && lon != 0 {
+			areas = MatchStatsGeofence(lat, lon)
+		}
+
+		statsCollector.IncDecodeQuest("ok", haveArStr, areas)
+	}()
+
 	pokestopMutex, _ := pokestopStripedMutex.GetLock(quest.FortId)
 	pokestopMutex.Lock()
 	defer pokestopMutex.Unlock()
@@ -919,6 +931,9 @@ func UpdatePokestopWithQuest(ctx context.Context, db db.DbDetails, quest *pogo.F
 
 	updatePokestopGetMapFortCache(pokestop)
 	savePokestopRecord(ctx, db, pokestop)
+
+	lat, lon = pokestop.Lat, pokestop.Lon
+
 	return fmt.Sprintf("%s %s %s", quest.FortId, haveArStr, questTitle)
 }
 

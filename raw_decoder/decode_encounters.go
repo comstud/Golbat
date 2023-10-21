@@ -24,18 +24,17 @@ func (dec *rawDecoder) decodeEncounter(ctx context.Context, protoData *Proto) (b
 	decodedEncounterInfo := &pogo.EncounterOutProto{}
 	if err := proto.Unmarshal(response, decodedEncounterInfo); err != nil {
 		log.Errorf("Failed to parse %s", err)
-		dec.statsCollector.IncDecodeEncounter("error", "parse")
+		dec.statsCollector.IncDecodeEncounter("error", "parse", nil)
 		return true, fmt.Sprintf("Failed to parse %s", err)
 	}
 
 	if decodedEncounterInfo.Status != pogo.EncounterOutProto_ENCOUNTER_SUCCESS {
-		dec.statsCollector.IncDecodeEncounter("error", "non_success")
+		dec.statsCollector.IncDecodeEncounter("error", "non_success", nil)
 		res := fmt.Sprintf(`GymGetInfoOutProto: Ignored non-success value %d:%s`, decodedEncounterInfo.Status,
 			pogo.EncounterOutProto_Status_name[int32(decodedEncounterInfo.Status)])
 		return true, res
 	}
 
-	dec.statsCollector.IncDecodeEncounter("ok", "")
 	return true, decoder.UpdatePokemonRecordWithEncounterProto(ctx, dec.dbDetails, decodedEncounterInfo, username)
 }
 
@@ -44,18 +43,17 @@ func (dec *rawDecoder) decodeDiskEncounter(ctx context.Context, protoData *Proto
 	encounterProto := &pogo.DiskEncounterOutProto{}
 	if err := proto.Unmarshal(response, encounterProto); err != nil {
 		log.Errorf("Failed to parse %s", err)
-		dec.statsCollector.IncDecodeDiskEncounter("error", "parse")
+		dec.statsCollector.IncDecodeDiskEncounter("error", "parse", nil)
 		return true, fmt.Sprintf("Failed to parse %s", err)
 	}
 
 	if encounterProto.Result != pogo.DiskEncounterOutProto_SUCCESS {
-		dec.statsCollector.IncDecodeDiskEncounter("error", "non_success")
+		dec.statsCollector.IncDecodeDiskEncounter("error", "non_success", nil)
 		res := fmt.Sprintf(`DiskEncounterOutProto: Ignored non-success value %d:%s`, encounterProto.Result,
 			pogo.DiskEncounterOutProto_Result_name[int32(encounterProto.Result)])
 		return true, res
 	}
 
-	dec.statsCollector.IncDecodeDiskEncounter("ok", "")
 	return true, decoder.UpdatePokemonRecordWithDiskEncounterProto(
 		ctx, dec.dbDetails, encounterProto, protoData.Account,
 	)

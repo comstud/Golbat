@@ -15,7 +15,7 @@ func (dec *rawDecoder) decodeFortSearch(ctx context.Context, protoData *Proto) (
 	haveAr := protoData.HaveAr
 
 	if haveAr == nil {
-		dec.statsCollector.IncDecodeQuest("error", "missing_ar_info")
+		dec.statsCollector.IncDecodeQuest("error", "missing_ar_info", nil)
 		log.Infoln("Cannot determine AR quest - ignoring")
 		// We should either assume AR quest, or trace inventory like RDM probably
 		return true, "No AR quest info"
@@ -23,12 +23,12 @@ func (dec *rawDecoder) decodeFortSearch(ctx context.Context, protoData *Proto) (
 	decodedQuest := &pogo.FortSearchOutProto{}
 	if err := proto.Unmarshal(response, decodedQuest); err != nil {
 		log.Errorf("Failed to parse %s", err)
-		dec.statsCollector.IncDecodeQuest("error", "parse")
+		dec.statsCollector.IncDecodeQuest("error", "parse", nil)
 		return true, "Parse failure"
 	}
 
 	if decodedQuest.Result != pogo.FortSearchOutProto_SUCCESS {
-		dec.statsCollector.IncDecodeQuest("error", "non_success")
+		dec.statsCollector.IncDecodeQuest("error", "non_success", nil)
 		res := fmt.Sprintf(`GymGetInfoOutProto: Ignored non-success value %d:%s`, decodedQuest.Result,
 			pogo.FortSearchOutProto_Result_name[int32(decodedQuest.Result)])
 		return true, res

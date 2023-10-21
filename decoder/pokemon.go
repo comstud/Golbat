@@ -224,15 +224,28 @@ func hasChangesPokemon(old *Pokemon, new *Pokemon) bool {
 		!nullFloatAlmostEqual(old.Capture3, new.Capture3, floatTolerance)
 }
 
-func savePokemonRecord(ctx context.Context, db db.DbDetails, pokemon *Pokemon) {
-	savePokemonRecordAsAtTime(ctx, db, pokemon, time.Now().Unix())
+func savePokemonRecord(ctx context.Context, db db.DbDetails, encounterType string, pokemon *Pokemon) {
+	savePokemonRecordAsAtTime(ctx, db, encounterType, pokemon, time.Now().Unix())
 }
 
-func savePokemonRecordAsAtTime(ctx context.Context, db db.DbDetails, pokemon *Pokemon, now int64) {
+func savePokemonRecordAsAtTime(ctx context.Context, db db.DbDetails, encounterType string, pokemon *Pokemon, now int64) {
 	oldPokemon, _ := getPokemonRecord(ctx, db, pokemon.Id)
 
+	var areas []geo.AreaName
+
+	if encounterType != "" {
+		areas = MatchStatsGeofence(pokemon.Lat, pokemon.Lon)
+	}
+
 	if oldPokemon != nil && !hasChangesPokemon(oldPokemon, pokemon) {
+		if encounterType != "" {
+			statsCollector.IncDecodeEncounterType(encounterType, "ok", "duplicate", areas)
+		}
 		return
+	}
+
+	if encounterType != "" {
+		statsCollector.IncDecodeEncounterType(encounterType, "ok", "", areas)
 	}
 
 	// Blank, non-persisted record are now inserted into the cache to save on DB calls
@@ -387,7 +400,9 @@ func savePokemonRecordAsAtTime(ctx context.Context, db db.DbDetails, pokemon *Po
 
 	updatePokemonLookup(pokemon, changePvpField, pvpResults)
 
-	areas := MatchStatsGeofence(pokemon.Lat, pokemon.Lon)
+	if areas == nil {
+		areas = MatchStatsGeofence(pokemon.Lat, pokemon.Lon)
+	}
 	createPokemonWebhooks(oldPokemon, pokemon, areas)
 	updatePokemonStats(oldPokemon, pokemon, areas)
 	updatePokemonNests(oldPokemon, pokemon)
@@ -1118,7 +1133,7 @@ func UpdatePokemonRecordWithEncounterProto(ctx context.Context, db db.DbDetails,
 	}
 
 	pokemon.updatePokemonFromEncounterProto(ctx, db, encounter, username)
-	savePokemonRecord(ctx, db, pokemon)
+	savePokemonRecord(ctx, db, "wild", pokemon)
 	// updateEncounterStats() should only be called for encounters, and called
 	// even if we have the pokemon record already.
 	updateEncounterStats(pokemon)
@@ -1149,7 +1164,7 @@ func UpdatePokemonRecordWithDiskEncounterProto(ctx context.Context, db db.DbDeta
 		return fmt.Sprintf("%s Disk encounter without previous GMO - Pokemon stored for later", encounterId)
 	}
 	pokemon.updatePokemonFromDiskEncounterProto(ctx, db, encounter, username)
-	savePokemonRecord(ctx, db, pokemon)
+	savePokemonRecord(ctx, db, "lure", pokemon)
 	// updateEncounterStats() should only be called for encounters, and called
 	// even if we have the pokemon record already.
 	updateEncounterStats(pokemon)
