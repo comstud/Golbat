@@ -1,11 +1,14 @@
 package decoder
 
 import (
+	"context"
 	"fmt"
-	"golbat/geo"
 	"os"
+	"strconv"
 	"sync"
 	"time"
+
+	"golbat/geo"
 
 	"github.com/jellydator/ttlcache/v3"
 	"github.com/jmoiron/sqlx"
@@ -44,6 +47,13 @@ type areaPokemonCountDetail struct {
 	ivCount [maxPokemonNo + 1]int
 }
 
+type pokemonShinyStats struct {
+	sync.Mutex
+	isShinyByAccount map[string]bool
+}
+
+// both of these are indexed by Pokemon.Id (encoutner id)
+var pokemonShinyCache *ttlcache.Cache[string, *pokemonShinyStats]
 var pokemonTimingCache *ttlcache.Cache[string, pokemonTimings]
 
 var pokemonStats = make(map[geo.AreaName]areaStatsCount)
@@ -55,6 +65,12 @@ func initLiveStats() {
 		ttlcache.WithDisableTouchOnHit[string, pokemonTimings](),
 	)
 	go pokemonTimingCache.Start()
+	pokemonShinyCache = ttlcache.New[string, *pokemonShinyStats](
+		ttlcache.WithTTL[string, *pokemonShinyStats](60*time.Minute),
+		ttlcache.WithDisableTouchOnHit[string, *pokemonShinyStats](),
+	)
+	go pokemonShinyCache.Start()
+
 }
 
 func LoadStatsGeofences() {
@@ -67,30 +83,70 @@ func LoadStatsGeofences() {
 	}
 }
 
-func StartStatsWriter(statsDb *sqlx.DB) {
+// RunStatsWriter starts the goroutines that will periodically
+// copy stats to the DB. This method will block until `ctx` is
+// cancelled, signaling that a shutdown is desired. Before
+// returning, any started goroutines will be exited.
+func RunStatsWriter(ctx context.Context, statsDb *sqlx.DB) {
+	var wg sync.WaitGroup
+
+	ctx, cancelFn := context.WithCancel(ctx)
+	defer cancelFn()
+
+	goroutineDone := func() {
+		cancelFn()
+		wg.Done()
+	}
+
 	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	wg.Add(1)
 	go func() {
+		defer goroutineDone()
 		for {
-			<-ticker.C
-			logPokemonStats(statsDb)
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				logPokemonStats(statsDb)
+			}
 		}
 	}()
 
 	t2 := time.NewTicker(10 * time.Minute)
+	defer t2.Stop()
+
+	wg.Add(1)
 	go func() {
+		defer goroutineDone()
 		for {
-			<-t2.C
-			logPokemonCount(statsDb)
+			select {
+			case <-ctx.Done():
+				return
+			case <-t2.C:
+				logPokemonCount(statsDb)
+			}
 		}
 	}()
 
 	t3 := time.NewTicker(15 * time.Minute)
+	defer t3.Stop()
+
+	wg.Add(1)
 	go func() {
+		defer goroutineDone()
 		for {
-			<-t3.C
-			logNestCount()
+			select {
+			case <-ctx.Done():
+				return
+			case <-t3.C:
+				logNestCount()
+			}
 		}
 	}()
+
+	wg.Wait()
 }
 
 func ReloadGeofenceAndClearStats() {
@@ -107,18 +163,101 @@ func ReloadGeofenceAndClearStats() {
 	pokemonCount = make(map[geo.AreaName]*areaPokemonCountDetail) // clear count
 }
 
-func updatePokemonStats(old *Pokemon, new *Pokemon, areaNames []geo.AreaName) {
-	var areas []geo.AreaName
+func updateShinyStats(pokemon *Pokemon, areas []geo.AreaName) {
+	// Keep track of encounter Id -> account username. Count shinies
+	// for the same encounter Ids, but only if an account has not seen
+	// it before. We'll ignore things like re-rolls when events end. It's
+	// not worth the logic.
 
-	if len(areaNames) == 0 {
+	username := pokemon.Username.ValueOrZero()
+	if username == "" {
+		username = "<NoUsername>"
+	}
+
+	if len(areas) == 0 {
 		areas = []geo.AreaName{
 			{
 				Parent: "world",
 				Name:   "world",
 			},
 		}
+	}
+
+	isShiny := pokemon.Shiny.ValueOrZero()
+
+	var shinyStats *pokemonShinyStats
+
+	if shinyStatsEntry := pokemonShinyCache.Get(pokemon.Id); shinyStatsEntry == nil {
+		shinyStats = &pokemonShinyStats{
+			isShinyByAccount: map[string]bool{
+				username: isShiny,
+			},
+		}
 	} else {
-		areas = areaNames
+		shinyStats = shinyStatsEntry.Value()
+		shinyStats.Lock()
+		if _, ok := shinyStats.isShinyByAccount[username]; ok {
+			shinyStats.Unlock()
+			// already counted
+			return
+		}
+		shinyStats.isShinyByAccount[username] = isShiny
+		shinyStats.Unlock()
+	}
+
+	pokemonShinyCache.Set(pokemon.Id, shinyStats, cacheTTLFromPokemonExpire(pokemon))
+
+	pokemonIdStr := strconv.Itoa(int(pokemon.PokemonId))
+	isHundo := pokemon.AtkIv.Int64 == 15 && pokemon.DefIv.Int64 == 15 && pokemon.StaIv.Int64 == 15
+	isNundo := pokemon.AtkIv.Int64 == 0 && pokemon.DefIv.Int64 == 0 && pokemon.StaIv.Int64 == 0
+
+	if isShiny {
+		pokemonStatsLock.Lock()
+		defer pokemonStatsLock.Unlock()
+	}
+
+	for _, area := range areas {
+		fullAreaName := area.String()
+
+		if isShiny {
+			countStats := pokemonCount[area]
+			// this would be more useful if we were also counting non-shinies, but
+			// one can get at this if they use whatever is backing the other
+			// statsCollector below (prometheus).
+			countStats.shiny[pokemon.PokemonId]++
+
+			statsCollector.IncPokemonCountShiny(fullAreaName, pokemonIdStr)
+			if isHundo {
+				statsCollector.IncPokemonCountShundo(fullAreaName)
+			} else if isNundo {
+				statsCollector.IncPokemonCountSnundo(fullAreaName)
+			}
+		} else {
+			// send non-shinies also, so that we can compute odds.
+			statsCollector.IncPokemonCountNonShiny(fullAreaName, pokemonIdStr)
+		}
+	}
+}
+
+func cacheTTLFromPokemonExpire(pokemon *Pokemon) time.Duration {
+	remaining := ttlcache.DefaultTTL
+	if pokemon.ExpireTimestampVerified {
+		timeLeft := 60 + pokemon.ExpireTimestamp.ValueOrZero() - time.Now().Unix()
+		if timeLeft > 1 {
+			remaining = time.Duration(timeLeft) * time.Second
+		}
+	}
+	return remaining
+}
+
+func updatePokemonStats(old *Pokemon, new *Pokemon, areas []geo.AreaName) {
+	if len(areas) == 0 {
+		areas = []geo.AreaName{
+			{
+				Parent: "world",
+				Name:   "world",
+			},
+		}
 	}
 
 	// General stats
@@ -150,14 +289,7 @@ func updatePokemonStats(old *Pokemon, new *Pokemon, areaNames []geo.AreaName) {
 
 	updatePokemonTiming := func() {
 		if pokemonTiming != nil {
-			remaining := ttlcache.DefaultTTL
-			if new.ExpireTimestampVerified {
-				timeLeft := 60 + new.ExpireTimestamp.ValueOrZero() - time.Now().Unix()
-				if timeLeft > 1 {
-					remaining = time.Duration(timeLeft) * time.Second
-				}
-			}
-			pokemonTimingCache.Set(new.Id, *pokemonTiming, remaining)
+			pokemonTimingCache.Set(new.Id, *pokemonTiming, cacheTTLFromPokemonExpire(new))
 		}
 	}
 
@@ -228,8 +360,24 @@ func updatePokemonStats(old *Pokemon, new *Pokemon, areaNames []geo.AreaName) {
 
 	locked := false
 
+	var isHundo bool
+	var isNundo bool
+
+	if new.Cp.Valid && new.AtkIv.Valid && new.DefIv.Valid && new.StaIv.Valid {
+		atk := new.AtkIv.ValueOrZero()
+		def := new.DefIv.ValueOrZero()
+		sta := new.StaIv.ValueOrZero()
+		if atk == 15 && def == 15 && sta == 15 {
+			isHundo = true
+		}
+		if atk == 0 && def == 0 && sta == 0 {
+			isNundo = true
+		}
+	}
+
 	for i := 0; i < len(areas); i++ {
 		area := areas[i]
+		fullAreaName := area.String()
 
 		// Count stats
 
@@ -248,26 +396,20 @@ func updatePokemonStats(old *Pokemon, new *Pokemon, areaNames []geo.AreaName) {
 
 			if old == nil || old.PokemonId != new.PokemonId { // pokemon is new or type has changed
 				countStats.count[new.PokemonId]++
-				statsCollector.IncPokemonCountNew(area.String())
+				statsCollector.IncPokemonCountNew(fullAreaName)
 				if new.ExpireTimestampVerified {
 					statsCollector.UpdateVerifiedTtl(area, new.SeenType, new.ExpireTimestamp)
 				}
 			}
 			if new.Cp.Valid {
 				countStats.ivCount[new.PokemonId]++
-				statsCollector.IncPokemonCountIv(area.String())
-				if new.AtkIv.Valid && new.DefIv.Valid && new.StaIv.Valid {
-					atk := new.AtkIv.ValueOrZero()
-					def := new.DefIv.ValueOrZero()
-					sta := new.StaIv.ValueOrZero()
-					if atk == 15 && def == 15 && sta == 15 {
-						statsCollector.IncPokemonCountHundo(area.String())
-						countStats.hundos[new.PokemonId]++
-					}
-					if atk == 0 && def == 0 && sta == 0 {
-						statsCollector.IncPokemonCountNundo(area.String())
-						countStats.nundos[new.PokemonId]++
-					}
+				statsCollector.IncPokemonCountIv(fullAreaName)
+				if isHundo {
+					statsCollector.IncPokemonCountHundo(fullAreaName)
+					countStats.hundos[new.PokemonId]++
+				} else if isNundo {
+					statsCollector.IncPokemonCountNundo(fullAreaName)
+					countStats.nundos[new.PokemonId]++
 				}
 			}
 		}
@@ -286,7 +428,7 @@ func updatePokemonStats(old *Pokemon, new *Pokemon, areaNames []geo.AreaName) {
 				areaStats.tthBucket[bucket]++
 			}
 
-			statsCollector.AddPokemonStatsResetCount(area.String(), float64(statsResetCountIncr))
+			statsCollector.AddPokemonStatsResetCount(fullAreaName, float64(statsResetCountIncr))
 
 			areaStats.monsIv += monsIvIncr
 			areaStats.monsSeen += monsSeenIncr
@@ -492,5 +634,4 @@ func logPokemonCount(statsDb *sqlx.DB) {
 		updateStatsCount("pokemon_nundo_stats", nundoRows)
 		updateStatsCount("pokemon_shiny_stats", shinyRows)
 	}()
-
 }

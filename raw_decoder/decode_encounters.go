@@ -56,5 +56,5 @@ func (dec *rawDecoder) decodeDiskEncounter(ctx context.Context, protoData *Proto
 	}
 
 	dec.statsCollector.IncDecodeDiskEncounter("ok", "")
-	return true, decoder.UpdatePokemonRecordWithDiskEncounterProto(ctx, dec.dbDetails, decodedEncounterInfo)
+	return true, decoder.UpdatePokemonRecordWithDiskEncounterProto(ctx, dec.dbDetails, decodedEncounterInfo, protoData.Account)
 }

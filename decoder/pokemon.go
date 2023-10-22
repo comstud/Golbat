@@ -5,19 +5,21 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/UnownHash/gohbem"
-	"github.com/golang/geo/s2"
-	"github.com/jellydator/ttlcache/v3"
-	log "github.com/sirupsen/logrus"
+	"math"
+	"strconv"
+	"time"
+
 	"golbat/config"
 	"golbat/db"
 	"golbat/geo"
 	"golbat/pogo"
 	"golbat/webhooks"
+
+	"github.com/UnownHash/gohbem"
+	"github.com/golang/geo/s2"
+	"github.com/jellydator/ttlcache/v3"
+	log "github.com/sirupsen/logrus"
 	"gopkg.in/guregu/null.v4"
-	"math"
-	"strconv"
-	"time"
 )
 
 // Pokemon struct.
@@ -228,6 +230,16 @@ func savePokemonRecord(ctx context.Context, db db.DbDetails, pokemon *Pokemon) {
 func savePokemonRecordAsAtTime(ctx context.Context, db db.DbDetails, pokemon *Pokemon, now int64) {
 	oldPokemon, _ := getPokemonRecord(ctx, db, pokemon.Id)
 
+	var areas []geo.AreaName
+
+	if pokemon.Cp.Valid && pokemon.AtkIv.Valid && pokemon.DefIv.Valid && pokemon.StaIv.Valid {
+		// In order to have accurate shiny stats and compute shiny odds, we need to count
+		// the encounters by account username, even if nothing has changed with this encounter.
+		// updateShinyStats() will take care of the rest.
+		areas = MatchStatsGeofence(pokemon.Lat, pokemon.Lon)
+		updateShinyStats(pokemon, areas)
+	}
+
 	if oldPokemon != nil && !hasChangesPokemon(oldPokemon, pokemon) {
 		return
 	}
@@ -382,7 +394,9 @@ func savePokemonRecordAsAtTime(ctx context.Context, db db.DbDetails, pokemon *Po
 
 	updatePokemonLookup(pokemon, changePvpField, pvpResults)
 
-	areas := MatchStatsGeofence(pokemon.Lat, pokemon.Lon)
+	if areas == nil {
+		areas = MatchStatsGeofence(pokemon.Lat, pokemon.Lon)
+	}
 	createPokemonWebhooks(oldPokemon, pokemon, areas)
 	updatePokemonStats(oldPokemon, pokemon, areas)
 	updatePokemonNests(oldPokemon, pokemon)
@@ -933,20 +947,19 @@ func (pokemon *Pokemon) updatePokemonFromEncounterProto(ctx context.Context, db 
 	pokemon.SeenType = null.StringFrom(SeenType_Encounter)
 }
 
-func (pokemon *Pokemon) updatePokemonFromDiskEncounterProto(ctx context.Context, db db.DbDetails, encounterData *pogo.DiskEncounterOutProto) {
+func (pokemon *Pokemon) updatePokemonFromDiskEncounterProto(ctx context.Context, db db.DbDetails, encounterData *pogo.DiskEncounterOutProto, username string) {
 	pokemon.IsEvent = 0
 	pokemon.addEncounterPokemon(ctx, db, encounterData.Pokemon)
 
 	if encounterData.Pokemon.PokemonDisplay.Shiny {
 		pokemon.Shiny = null.BoolFrom(true)
-		pokemon.Username = null.StringFrom("AccountShiny")
 	} else {
 		if !pokemon.Shiny.Valid {
 			pokemon.Shiny = null.BoolFrom(false)
 		}
-		if !pokemon.Username.Valid {
-			pokemon.Username = null.StringFrom("Account")
-		}
+	}
+	if !pokemon.Username.Valid {
+		pokemon.Username = null.StringFrom(username)
 	}
 
 	pokemon.SeenType = null.StringFrom(SeenType_LureEncounter)
@@ -1129,7 +1142,7 @@ func UpdatePokemonRecordWithEncounterProto(ctx context.Context, db db.DbDetails,
 	return fmt.Sprintf("%d %s Pokemon %d CP%d", encounter.Pokemon.EncounterId, encounterId, pokemon.PokemonId, encounter.Pokemon.Pokemon.Cp)
 }
 
-func UpdatePokemonRecordWithDiskEncounterProto(ctx context.Context, db db.DbDetails, encounter *pogo.DiskEncounterOutProto) string {
+func UpdatePokemonRecordWithDiskEncounterProto(ctx context.Context, db db.DbDetails, encounter *pogo.DiskEncounterOutProto, username string) string {
 	if encounter.Pokemon == nil {
 		return "No encounter"
 	}
@@ -1151,7 +1164,7 @@ func UpdatePokemonRecordWithDiskEncounterProto(ctx context.Context, db db.DbDeta
 		diskEncounterCache.Set(encounterId, encounter, ttlcache.DefaultTTL)
 		return fmt.Sprintf("%s Disk encounter without previous GMO - Pokemon stored for later", encounterId)
 	}
-	pokemon.updatePokemonFromDiskEncounterProto(ctx, db, encounter)
+	pokemon.updatePokemonFromDiskEncounterProto(ctx, db, encounter, username)
 	savePokemonRecord(ctx, db, pokemon)
 
 	return fmt.Sprintf("%s Disk Pokemon %d CP%d", encounterId, pokemon.PokemonId, encounter.Pokemon.Cp)

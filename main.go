@@ -3,6 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
+	"sync"
+	"time"
+	_ "time/tzdata"
+
 	"golbat/config"
 	db2 "golbat/db"
 	"golbat/decoder"
@@ -12,24 +18,17 @@ import (
 	"golbat/raw_decoder"
 	"golbat/stats_collector"
 	"golbat/webhooks"
-	"net"
-	"net/http"
-	"sync"
-	"time"
-	_ "time/tzdata"
-
-	"google.golang.org/grpc"
 
 	"github.com/Depado/ginprom"
+	"github.com/gin-gonic/gin"
+	"github.com/go-sql-driver/mysql"
 	"github.com/golang-migrate/migrate/v4"
+	_ "github.com/golang-migrate/migrate/v4/database/mysql"
+	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jmoiron/sqlx"
 	log "github.com/sirupsen/logrus"
 	ginlogrus "github.com/toorop/gin-logrus"
-
-	"github.com/gin-gonic/gin"
-	"github.com/go-sql-driver/mysql"
-	_ "github.com/golang-migrate/migrate/v4/database/mysql"
-	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"google.golang.org/grpc"
 )
 
 var db *sqlx.DB
@@ -195,7 +194,13 @@ func main() {
 	log.Infoln("Golbat started")
 
 	StartDbUsageStatsLogger(db)
-	decoder.StartStatsWriter(db)
+
+	wg.Add(1)
+	go func() {
+		defer cancelFn()
+		defer wg.Done()
+		decoder.RunStatsWriter(ctx, db)
+	}()
 
 	if cfg.Tuning.ExtendedTimeout {
 		log.Info("Extended timeout enabled")

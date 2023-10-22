@@ -140,29 +140,34 @@ var (
 		},
 		[]string{"area"},
 	)
-	/*
-		pokemonCountShiny = prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "pokemon_count_shiny",
-				Help: "Total Shiny count",
-			},
-			[]string{"area"},
-		)
-		pokemonCountShundo = prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "pokemon_count_shundo",
-				Help: "Total Shundo count",
-			},
-			[]string{"area"},
-		)
-		pokemonCountSnundo = prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "pokemon_count_snundo",
-				Help: "Total Snundo count",
-			},
-			[]string{"area"},
-		)
-	*/
+	pokemonCountShiny = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "pokemon_count_shiny",
+			Help: "Total Shiny count by pokemon dex id",
+		},
+		[]string{"area", "pokemon_id"},
+	)
+	pokemonCountNonShiny = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "pokemon_count_non_shiny",
+			Help: "Total Non-Shiny count by pokemon dex id",
+		},
+		[]string{"area", "pokemon_id"},
+	)
+	pokemonCountShundo = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "pokemon_count_shundo",
+			Help: "Total Shundo count",
+		},
+		[]string{"area"},
+	)
+	pokemonCountSnundo = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "pokemon_count_snundo",
+			Help: "Total Snundo count",
+		},
+		[]string{"area"},
+	)
 	pokemonCountHundo = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "pokemon_count_hundo",
@@ -294,9 +299,12 @@ func (col *promCollector) IncPokemonCountIv(area string) {
 	pokemonCountIv.WithLabelValues(area).Inc()
 }
 
-/*
-func (col *promCollector) IncPokemonCountShiny(area string) {
-	pokemonCountShiny.WithLabelValues(area).Inc()
+func (col *promCollector) IncPokemonCountShiny(area string, pokemonId string) {
+	pokemonCountShiny.WithLabelValues(area, pokemonId).Inc()
+}
+
+func (col *promCollector) IncPokemonCountNonShiny(area string, pokemonId string) {
+	pokemonCountNonShiny.WithLabelValues(area, pokemonId).Inc()
 }
 
 func (col *promCollector) IncPokemonCountShundo(area string) {
@@ -306,7 +314,6 @@ func (col *promCollector) IncPokemonCountShundo(area string) {
 func (col *promCollector) IncPokemonCountSnundo(area string) {
 	pokemonCountSnundo.WithLabelValues(area).Inc()
 }
-*/
 
 func (col *promCollector) IncPokemonCountHundo(area string) {
 	pokemonCountHundo.WithLabelValues(area).Inc()
@@ -374,6 +381,7 @@ func initPrometheus() {
 		pokemonStatsResetCount,
 
 		pokemonCountNew, pokemonCountIv, pokemonCountHundo, pokemonCountNundo,
+		pokemonCountShiny, pokemonCountNonShiny, pokemonCountShundo, pokemonCountSnundo,
 
 		verifiedPokemonTTL, verifiedPokemonTTLCounter, raidCount, fortCount, incidentCount,
 	)

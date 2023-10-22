@@ -25,11 +25,10 @@ type StatsCollector interface {
 	AddPokemonStatsResetCount(area string, val float64)
 	IncPokemonCountNew(area string)
 	IncPokemonCountIv(area string)
-	/*
-		IncPokemonCountShiny(area string)
-		IncPokemonCountShundo(area string)
-		IncPokemonCountSnundo(area string)
-	*/
+	IncPokemonCountShiny(area string, pokemonId string)
+	IncPokemonCountNonShiny(area string, pokemonId string)
+	IncPokemonCountShundo(area string)
+	IncPokemonCountSnundo(area string)
 	IncPokemonCountHundo(area string)
 	IncPokemonCountNundo(area string)
 	UpdateVerifiedTtl(area geo.AreaName, seenType null.String, expireTimestamp null.Int)
